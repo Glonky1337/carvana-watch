@@ -24,6 +24,7 @@ PRIORITY = {"UNICORN": 1, "GRAB": 0, "FAIR": -1}
 NY_TAX_RATE = 0.0875
 TITLE_REG_EST = 250
 ANNUAL_MILES = 6000
+TARGET_IDS = {"4531716", "4536523"}
 
 def search():
     resp = requests.post(
@@ -189,23 +190,30 @@ def main():
         notify("", "Carvana Watch broken", f"search() failed: {e}", priority=1)
         raise
 
+    print("=== TARGET CHECK ===")
+    target_hits = {str(v.get("vehicleId")): v for v in vehicles if str(v.get("vehicleId")) in TARGET_IDS}
+    for tid in TARGET_IDS:
+        if tid in target_hits:
+            v = target_hits[tid]
+            print(f"  FOUND {tid} ({v.get('year')} {v.get('parentModel')} {v.get('trim')}):")
+            print(f"    tags={v.get('vehicleTags')}")
+            print(f"    inventoryType={v.get('vehicleInventoryType')} "
+                  f"purchaseType={v.get('vehiclePurchaseType')} "
+                  f"lockType={v.get('vehicleLockType')}")
+            print(f"    fulfillmentType={v.get('fulfillmentType')} "
+                  f"pending={v.get('isPurchasePending')} "
+                  f"onDemand={v.get('isOnDemand')}")
+            print(f"    reservable={v.get('vehicleReservableReasons')} "
+                  f"days={v.get('analyticsOnlyGetItByDays')}")
+        else:
+            print(f"  NOT IN SEARCH RESULTS: {tid}")
+    print("=== END TARGET CHECK ===")
+
     all_tags = set()
     for v in vehicles:
         for t in (v.get("vehicleTags") or []):
             all_tags.add((t.get("tagKey"), t.get("tagName")))
     print(f"ALL UNIQUE TAGS ACROSS BATCH: {sorted(all_tags)}")
-
-    for i, v in enumerate(vehicles[:5]):
-        print(f"  SAMPLE #{i} [{v.get('vehicleId')}]: "
-              f"inventoryType={v.get('vehicleInventoryType')} "
-              f"purchaseType={v.get('vehiclePurchaseType')} "
-              f"lockType={v.get('vehicleLockType')} "
-              f"fulfillmentType={v.get('fulfillmentType')} "
-              f"pending={v.get('isPurchasePending')} "
-              f"onDemand={v.get('isOnDemand')} "
-              f"reservable={v.get('vehicleReservableReasons')} "
-              f"days={v.get('analyticsOnlyGetItByDays')} "
-              f"tagKeys={[t.get('tagKey') for t in (v.get('vehicleTags') or [])]}")
 
     sent = 0
     for v in vehicles:

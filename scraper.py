@@ -152,7 +152,7 @@ def fetch_vdp_details(vehicle_id, vin):
                     "provider": provider, "report_url": report_url}
 
         return {"clean": None,
-                "summary": f"History not verified — check {provider or 'history report'} link",
+                "summary": f"History not verified by scraper — CarFax link included so Kevin can check",
                 "provider": provider, "report_url": report_url}
     except Exception as e:
         print(f"    VDP fetch error for {vehicle_id}: {e}")
@@ -161,7 +161,7 @@ def fetch_vdp_details(vehicle_id, vin):
             fallback_provider = "CarFax"
             fallback_url = CARFAX_URL.format(vin)
         return {"clean": None,
-                "summary": "History not verified — check report link",
+                "summary": "History not verified by scraper — CarFax link included so Kevin can check",
                 "provider": fallback_provider, "report_url": fallback_url}
 
 def unavailable_reason(v):
@@ -244,22 +244,54 @@ def ai_review(v, verdict, stats, history):
     if not key:
         return ""
     make = v.get("make") or "Toyota"
+
+    prev_price = v.get("previousPrice")
+    days_listed = v.get("analyticsOnlyGetItByDays")
+    tag_names = [t.get("tagName") for t in (v.get("vehicleTags") or []) if t.get("tagName")]
+
+    extras = []
+    if prev_price and isinstance(prev_price, (int, float)) and prev_price > stats["price"]:
+        extras.append(f"  Previous price: ${int(prev_price):,} (dropped ${int(prev_price) - stats['price']:,})")
+    if days_listed:
+        extras.append(f"  Days on Carvana: {days_listed}")
+    if tag_names:
+        extras.append(f"  Carvana tags: {', '.join(tag_names)}")
+    extras_block = ("\n" + "\n".join(extras)) if extras else ""
+
+    report_block = ""
+    if history.get("report_url"):
+        report_block = f"\nVehicle history report ({history.get('provider', 'CarFax')}): {history['report_url']}\nIf you can access this URL, read it and factor accidents/owner count/service records/mileage consistency into your take."
+
     prompt = f"""Kevin is looking at a used car on Carvana. He lives in Depew NY, drives about 6k miles a year for leisure (not commuting), and wants something reliable and cheap to insure.
 
-Car: {v.get('year')} {make} {v.get('parentModel')} {v.get('trim', '')} ({v.get('color')})
-Miles: {stats['miles']:,} ({stats['life_pct']}% through its typical {stats['lifetime']}k-mile life; would last him ~{stats['years_left']:.0f} more years at his usage)
-Out-the-door price: ${stats['out_the_door']:,} (vehicle + shipping + NY tax + fees)
-Kelly Blue Book: ${stats['kbb']:,}
-Vehicle history: {history['summary']}
-His rubric flagged this as: {verdict}
+CAR: {v.get('year')} {make} {v.get('parentModel')} {v.get('trim', '')} ({v.get('color')})
+MILES: {stats['miles']:,} ({stats['life_pct']}% through its typical {stats['lifetime']}k-mile life; ~{stats['years_left']:.0f} more years at his usage)
 
-Give Kevin a plain-English take in 2-3 sentences. No jargon. Talk to him like a friend who knows cars. Flag any known problems with this specific year/model (transmission issues, oil consumption, etc.). If there's an accident on record, weight that heavily. End with one line that's just BUY, MAYBE, or SKIP."""
+PRICING:
+  Vehicle + shipping: ${stats['effective']:,}   <-- USE THIS for the KBB comparison
+  Kelly Blue Book: ${stats['kbb']:,}
+  Out-the-door with NY tax + fees: ${stats['out_the_door']:,}   (informational only, NOT for KBB comparison){extras_block}
+
+HISTORY: {history['summary']}{report_block}
+
+RUBRIC VERDICT: {verdict}
+
+Give Kevin a plain-English take in 2-3 sentences. Rules:
+- Compare price to KBB using vehicle+shipping (${stats['effective']:,}), NOT out-the-door.
+- If history isn't verified by the scraper, that's neutral — Kevin will click the CarFax link himself before buying. Don't treat it as a red flag on its own.
+- Flag known year/model problems if any (transmission, oil consumption, VTC actuator rattle, etc.).
+- If a CarFax URL is provided and you can access it, use what it actually says.
+- Consider the price-drop and days-on-market signals if given.
+- End with one line that's just BUY, MAYBE, or SKIP."""
 
     try:
         resp = requests.post(
             f"{GEMINI_URL}?key={key}",
-            json={"contents": [{"parts": [{"text": prompt}]}]},
-            timeout=20,
+            json={
+                "contents": [{"parts": [{"text": prompt}]}],
+                "tools": [{"url_context": {}}],
+            },
+            timeout=30,
         )
         resp.raise_for_status()
         text = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
@@ -313,7 +345,9 @@ def test_gemini():
     test_stats = {"price": 13990, "ship": 500, "kbb": 14000, "miles": 85000,
                   "effective": 14490, "out_the_door": 15800, "per_1k": 107,
                   "kbb_gap": 490, "life_pct": 39, "lifetime": 220, "years_left": 22}
-    test_history = {"summary": "Clean history — no reported accidents"}
+    test_history = {"summary": "Clean history — no reported accidents",
+                    "provider": "CarFax",
+                    "report_url": "https://www.carfax.com/VehicleHistory/p/Report.cfx?partner=CVN_0&vin=EXAMPLE"}
     result = ai_review(test_v, "GRAB", test_stats, test_history)
     if result:
         print(result)

@@ -24,7 +24,6 @@ PRIORITY = {"UNICORN": 1, "GRAB": 0, "FAIR": -1}
 NY_TAX_RATE = 0.0875
 TITLE_REG_EST = 250
 ANNUAL_MILES = 6000
-TARGET_IDS = {"4531716", "4536523"}
 
 def search():
     resp = requests.post(
@@ -61,20 +60,10 @@ def search():
 def unavailable_reason(v):
     if v.get("isPurchasePending"):
         return "purchase in progress"
-
-    tag_blob = " ".join(
-        f"{t.get('tagKey','')} {t.get('tagName','')}".lower()
-        for t in (v.get("vehicleTags") or [])
-    )
-    if "preorder" in tag_blob.replace("-", "").replace(" ", ""):
+    if str(v.get("vehiclePurchaseType") or "").lower() == "reservable":
         return "pre-order"
-    if "purchaseinprogress" in tag_blob.replace(" ", ""):
-        return "purchase in progress"
-
-    fulfillment = str(v.get("fulfillmentType") or "").lower().replace("-", "").replace("_", "")
-    if "preorder" in fulfillment:
-        return f"fulfillmentType={v.get('fulfillmentType')}"
-
+    if v.get("vehicleReservableReasons"):
+        return "pre-order"
     return None
 
 def analyze(v):
@@ -189,31 +178,6 @@ def main():
     except Exception as e:
         notify("", "Carvana Watch broken", f"search() failed: {e}", priority=1)
         raise
-
-    print("=== TARGET CHECK ===")
-    target_hits = {str(v.get("vehicleId")): v for v in vehicles if str(v.get("vehicleId")) in TARGET_IDS}
-    for tid in TARGET_IDS:
-        if tid in target_hits:
-            v = target_hits[tid]
-            print(f"  FOUND {tid} ({v.get('year')} {v.get('parentModel')} {v.get('trim')}):")
-            print(f"    tags={v.get('vehicleTags')}")
-            print(f"    inventoryType={v.get('vehicleInventoryType')} "
-                  f"purchaseType={v.get('vehiclePurchaseType')} "
-                  f"lockType={v.get('vehicleLockType')}")
-            print(f"    fulfillmentType={v.get('fulfillmentType')} "
-                  f"pending={v.get('isPurchasePending')} "
-                  f"onDemand={v.get('isOnDemand')}")
-            print(f"    reservable={v.get('vehicleReservableReasons')} "
-                  f"days={v.get('analyticsOnlyGetItByDays')}")
-        else:
-            print(f"  NOT IN SEARCH RESULTS: {tid}")
-    print("=== END TARGET CHECK ===")
-
-    all_tags = set()
-    for v in vehicles:
-        for t in (v.get("vehicleTags") or []):
-            all_tags.add((t.get("tagKey"), t.get("tagName")))
-    print(f"ALL UNIQUE TAGS ACROSS BATCH: {sorted(all_tags)}")
 
     sent = 0
     for v in vehicles:

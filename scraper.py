@@ -21,6 +21,9 @@ PUSHOVER_URL = "https://api.pushover.net/1/messages.json"
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
 DROP_THRESHOLD = 500
 PRIORITY = {"UNICORN": 1, "GRAB": 0, "FAIR": -1}
+NY_TAX_RATE = 0.0875
+TITLE_REG_EST = 250
+ANNUAL_MILES = 6000
 
 def search():
     resp = requests.post(
@@ -54,6 +57,18 @@ def search():
     resp.raise_for_status()
     return resp.json().get("inventory", {}).get("vehicles", [])
 
+def unavailable_reason(v):
+    if v.get("isPurchasePending"):
+        return "pending"
+    hero = str(v.get("standardizedHero") or "")
+    hero_norm = hero.lower().replace(" ", "").replace("-", "")
+    if "preorder" in hero_norm or "purchaseinprogress" in hero_norm:
+        return f"hero={hero}"
+    inv = str(v.get("vehicleInventoryType") or "").lower()
+    if "preorder" in inv.replace("-", "").replace("_", ""):
+        return f"inventoryType={v.get('vehicleInventoryType')}"
+    return None
+
 def analyze(v):
     p = v.get("price") or {}
     price = int(p.get("total") or 0)
@@ -62,10 +77,15 @@ def analyze(v):
     miles = int(v.get("mileage") or 0)
     model = (v.get("parentModel") or v.get("model") or "").lower()
 
-    effective = price + min(ship, 150)
+    effective = price + ship
+    sales_tax = int(price * NY_TAX_RATE)
+    fees = sales_tax + TITLE_REG_EST
+    out_the_door = effective + fees
+
     lifetime = 300 if "tacoma" in model else 220
     remaining_miles = max(lifetime * 1000 - miles, 20_000)
     life_pct = min(int(miles / (lifetime * 1000) * 100), 99)
+    years_left = remaining_miles / ANNUAL_MILES
     per_1k = effective / (remaining_miles / 1000)
     kbb_gap = effective - kbb if kbb else 0
 
@@ -79,28 +99,33 @@ def analyze(v):
     else:
         verdict = "PASS"
 
-    price_line = f"Best price: ${effective:,} (pickup from Latham NY)" if ship > 150 else f"Delivered: ${effective:,}"
     if kbb and kbb_gap <= -100:
-        kbb_line = f"${abs(kbb_gap):,} UNDER Kelly Blue Book value"
+        kbb_line = f"${abs(kbb_gap):,} UNDER Kelly Blue Book"
     elif kbb and kbb_gap > 100:
-        kbb_line = f"${kbb_gap:,} over Kelly Blue Book value"
+        kbb_line = f"${kbb_gap:,} over Kelly Blue Book"
     elif kbb:
-        kbb_line = "Priced right at Kelly Blue Book value"
+        kbb_line = "Right at Kelly Blue Book"
     else:
         kbb_line = ""
 
-    miles_line = f"Mileage: {miles:,} (about {life_pct}% of typical {lifetime}k life used)"
-
-    lines = [price_line]
+    lines = [
+        f"Vehicle: ${price:,}",
+        f"Shipping: ${ship:,}",
+        f"Est. NY tax + fees: ${fees:,}",
+        f"OUT THE DOOR: ${out_the_door:,}",
+        "",
+        f"Mileage: {miles:,} ({life_pct}% used)",
+    ]
     if kbb_line:
         lines.append(kbb_line)
-    lines.append(miles_line)
+    lines.append(f"At {ANNUAL_MILES:,} mi/yr: should last ~{years_left:.0f} more years")
     rubric = "\n".join(lines)
 
     return verdict, rubric, {
         "price": price, "ship": ship, "kbb": kbb, "miles": miles,
-        "effective": effective, "per_1k": per_1k, "kbb_gap": kbb_gap,
-        "life_pct": life_pct, "lifetime": lifetime,
+        "effective": effective, "out_the_door": out_the_door,
+        "per_1k": per_1k, "kbb_gap": kbb_gap,
+        "life_pct": life_pct, "lifetime": lifetime, "years_left": years_left,
     }
 
 def ai_review(v, verdict, stats):
@@ -110,8 +135,8 @@ def ai_review(v, verdict, stats):
     prompt = f"""Kevin is looking at a used Toyota on Carvana. He lives in Depew NY, drives about 6k miles a year, and wants something reliable and cheap to insure.
 
 Car: {v.get('year')} Toyota {v.get('parentModel')} {v.get('trim', '')} ({v.get('color')})
-Miles: {stats['miles']:,} (about {stats['life_pct']}% through its typical {stats['lifetime']}k-mile life)
-Best price: ${stats['effective']:,} ({'pickup from Latham NY' if stats['ship'] > 150 else 'delivered'})
+Miles: {stats['miles']:,} ({stats['life_pct']}% through its typical {stats['lifetime']}k-mile life; would last him ~{stats['years_left']:.0f} more years at his usage)
+Out-the-door price: ${stats['out_the_door']:,} (vehicle + shipping + NY tax + fees)
 Kelly Blue Book: ${stats['kbb']:,}
 His rubric flagged this as: {verdict}
 
@@ -157,12 +182,12 @@ def main():
         notify("", "Carvana Watch broken", f"search() failed: {e}", priority=1)
         raise
 
-    if vehicles:
-        v0 = vehicles[0]
-        print("SAMPLE tags:", v0.get("vehicleTags"))
-        print("SAMPLE hero:", v0.get("standardizedHero"))
-        print("SAMPLE recall:", v0.get("stockRecallStatusType"))
-        print("SAMPLE inventoryType:", v0.get("vehicleInventoryType"))
+    for i, v in enumerate(vehicles[:5]):
+        print(f"  SAMPLE #{i}: hero={v.get('standardizedHero')} "
+              f"inventoryType={v.get('vehicleInventoryType')} "
+              f"pending={v.get('isPurchasePending')} "
+              f"onDemand={v.get('isOnDemand')} "
+              f"tags={v.get('vehicleTags')}")
 
     sent = 0
     for v in vehicles:
@@ -179,21 +204,21 @@ def main():
         yr = v.get("year")
         mdl = v.get("parentModel") or v.get("model")
         trim = v.get("trim", "")
-        pending = bool(v.get("isPurchasePending"))
+        skip = unavailable_reason(v)
         print(f"  {yr} {mdl} {trim} ${p:,} @{stats['miles']:,}mi -> {verdict}"
-              f"{' [PENDING]' if pending else ''}"
-              f"{' [NEW]' if alert_new else ''}"
-              f"{f' [DROP -${drop:,}]' if alert_drop else ''}")
+              f"{f' [SKIP: {skip}]' if skip else ''}"
+              f"{' [NEW]' if alert_new and not skip else ''}"
+              f"{f' [DROP -${drop:,}]' if alert_drop and not skip else ''}")
 
-        if pending:
+        if skip:
             SEEN[k] = p
             continue
 
         if alert_new or alert_drop:
             headline = {
-                "UNICORN": "UNICORN — rare find, buy now",
-                "GRAB": "GRAB — good deal",
-                "FAIR": "FAIR — worth a look",
+                "UNICORN": "UNICORN: rare find, buy now",
+                "GRAB": "GRAB: good deal",
+                "FAIR": "FAIR: worth a look",
             }.get(verdict, verdict)
 
             body = f"{headline}\n{yr} Toyota {mdl} {trim}".strip() + "\n\n" + rubric

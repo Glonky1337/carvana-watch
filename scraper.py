@@ -2,11 +2,14 @@ import os, json, requests
 from pathlib import Path
 
 SEEN_FILE = Path("seen.json")
-SEEN = json.loads(SEEN_FILE.read_text()) if SEEN_FILE.exists() else []
+SEEN = set(json.loads(SEEN_FILE.read_text())) if SEEN_FILE.exists() else set()
+
+CARVANA_URL = "https://apik.carvana.io/merch/search/api/v2/search"
+PUSHOVER_URL = "https://api.pushover.net/1/messages.json"
 
 def search():
     resp = requests.post(
-        "https://apik.carvana.io/merch/search/api/v2/search",
+        CARVANA_URL,
         json={
             "filters": {
                 "makes": [{
@@ -34,11 +37,7 @@ def search():
         timeout=30,
     )
     resp.raise_for_status()
-    data = resp.json()
-    vehicles = data.get("inventory", {}).get("vehicles", [])
-    if vehicles:
-        print(f"ALL FIELDS: {sorted(vehicles[0].keys())}")
-    return vehicles
+    return resp.json().get("inventory", {}).get("vehicles", [])
 
 def analyze(v):
     p = v.get("price") or {}
@@ -50,7 +49,7 @@ def analyze(v):
 
     effective = price + min(ship, 150)
     lifetime = 300 if "tacoma" in model else 220
-    remaining_k = max(lifetime - miles/1000, 20)
+    remaining_k = max(lifetime - miles / 1000, 20)
     per_1k = effective / remaining_k
     over_kbb = effective - kbb if kbb else 0
 
@@ -70,11 +69,11 @@ def analyze(v):
 
 def notify(v, msg):
     vid = v.get("vehicleId") or v.get("stockNumber")
-    year = v.get("year") or v.get("modelYear") or ""
+    year = v.get("year") or ""
     model = v.get("parentModel") or v.get("model") or ""
     price = int((v.get("price") or {}).get("total") or 0)
     resp = requests.post(
-        "https://api.pushover.net/1/messages.json",
+        PUSHOVER_URL,
         data={
             "token": os.environ["PUSHOVER_TOKEN"],
             "user": os.environ["PUSHOVER_USER"],
@@ -85,35 +84,27 @@ def notify(v, msg):
         },
         timeout=10,
     )
-    print(f"    Pushover: {resp.status_code} {resp.text[:300]}")
+    if resp.status_code != 200:
+        print(f"    Pushover error: {resp.status_code} {resp.text[:200]}")
+
+def key(v):
+    return str(v.get("vehicleId") or v.get("stockNumber"))
 
 def main():
-    test = requests.post(
-        "https://api.pushover.net/1/messages.json",
-        data={
-            "token": os.environ["PUSHOVER_TOKEN"],
-            "user": os.environ["PUSHOVER_USER"],
-            "title": "Carvana Watch test",
-            "message": "If you see this, Pushover is wired up correctly.",
-        },
-        timeout=10,
-    )
-    print(f"TEST NOTIFICATION: {test.status_code} {test.text[:300]}")
-
     vehicles = search()
-    key = lambda v: str(v.get("vehicleId") or v.get("stockNumber"))
     new = [v for v in vehicles if key(v) not in SEEN]
     print(f"{len(vehicles)} matches, {len(new)} new")
     for v in new:
         verdict, msg = analyze(v)
-        yr = v.get("year") or v.get("modelYear")
+        yr = v.get("year")
         mdl = v.get("parentModel") or v.get("model")
-        pr = (v.get("price") or {}).get("total")
-        print(f"  {yr} {mdl} ${pr} @{v.get('mileage')}mi -> {verdict}")
+        pr = int((v.get("price") or {}).get("total") or 0)
+        mi = v.get("mileage") or 0
+        print(f"  {yr} {mdl} ${pr:,} @{mi:,}mi -> {verdict}")
         if verdict != "PASS":
             notify(v, msg)
-        SEEN.append(key(v))
-    SEEN_FILE.write_text(json.dumps(SEEN))
+        SEEN.add(key(v))
+    SEEN_FILE.write_text(json.dumps(sorted(SEEN)))
 
 if __name__ == "__main__":
     main()

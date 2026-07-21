@@ -6,7 +6,10 @@ SEEN_FILE = Path("seen.json")
 def load_seen():
     if not SEEN_FILE.exists():
         return {}
-    raw = json.loads(SEEN_FILE.read_text())
+    try:
+        raw = json.loads(SEEN_FILE.read_text())
+    except json.JSONDecodeError:
+        return {}
     if isinstance(raw, list):
         return {vid: 0 for vid in raw}
     return raw
@@ -17,6 +20,7 @@ CARVANA_URL = "https://apik.carvana.io/merch/search/api/v2/search"
 PUSHOVER_URL = "https://api.pushover.net/1/messages.json"
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
 DROP_THRESHOLD = 500
+PRIORITY = {"UNICORN": 1, "GRAB": 0, "FAIR": -1}
 
 def search():
     resp = requests.post(
@@ -62,23 +66,32 @@ def analyze(v):
     lifetime = 300 if "tacoma" in model else 220
     remaining_k = max(lifetime - miles / 1000, 20)
     per_1k = effective / remaining_k
-    over_kbb = effective - kbb if kbb else 0
+    kbb_gap = effective - kbb if kbb else 0
 
-    if miles < 80_000 and effective <= 14_000:
+    if kbb and kbb_gap <= -500 and miles < 90_000 and per_1k <= 90:
+        verdict = "UNICORN"
+    elif kbb_gap <= 500 and ((miles < 80_000 and effective <= 14_000) or
+                              (miles < 100_000 and effective <= 13_000)):
         verdict = "GRAB"
-    elif miles < 100_000 and effective <= 13_000:
-        verdict = "GRAB"
-    elif 80_000 <= miles <= 110_000 and 14_000 <= effective <= 15_000:
+    elif miles < 110_000 and per_1k <= 130 and kbb_gap <= 2000 and effective <= 15_500:
         verdict = "FAIR"
     else:
         verdict = "PASS"
 
     label = f"pickup ${effective:,}" if ship > 150 else f"ship ${effective:,}"
-    kbb_note = f" (+${over_kbb:,} over KBB)" if over_kbb > 1000 else ""
+    if kbb and kbb_gap <= -100:
+        kbb_note = f" (${abs(kbb_gap):,} UNDER KBB)"
+    elif kbb and kbb_gap > 1000:
+        kbb_note = f" (+${kbb_gap:,} over KBB)"
+    elif kbb:
+        kbb_note = " (near KBB)"
+    else:
+        kbb_note = ""
+
     rubric = f"VERDICT: {verdict}\nEFFECTIVE: {label}{kbb_note}\n$/1K REMAINING: ${per_1k:.0f}\nMILES: {miles:,}"
     return verdict, rubric, {
         "price": price, "ship": ship, "kbb": kbb, "miles": miles,
-        "effective": effective, "per_1k": per_1k,
+        "effective": effective, "per_1k": per_1k, "kbb_gap": kbb_gap,
     }
 
 def ai_review(v, verdict, stats):
@@ -112,7 +125,7 @@ Give a 2-3 sentence recommendation. Consider: is the KBB gap reasonable? Is the 
         print(f"    Gemini error: {e}")
         return ""
 
-def notify(vid, title, body):
+def notify(vid, title, body, priority=0):
     resp = requests.post(
         PUSHOVER_URL,
         data={
@@ -120,8 +133,9 @@ def notify(vid, title, body):
             "user": os.environ["PUSHOVER_USER"],
             "title": title,
             "message": body,
-            "url": f"https://www.carvana.com/vehicle/{vid}",
-            "url_title": "View listing",
+            "url": f"https://www.carvana.com/vehicle/{vid}" if vid else "",
+            "url_title": "View listing" if vid else "",
+            "priority": priority,
         },
         timeout=10,
     )
@@ -132,7 +146,12 @@ def key(v):
     return str(v.get("vehicleId") or v.get("stockNumber"))
 
 def main():
-    vehicles = search()
+    try:
+        vehicles = search()
+    except Exception as e:
+        notify("", "Carvana Watch broken", f"search() failed: {e}", priority=1)
+        raise
+
     sent = 0
     for v in vehicles:
         k = key(v)
@@ -141,7 +160,7 @@ def main():
         verdict, rubric, stats = analyze(v)
 
         is_new = prev is None
-        drop = (prev - p) if prev else 0
+        drop = (prev - p) if prev is not None else 0
         alert_new = is_new and verdict != "PASS"
         alert_drop = (not is_new) and drop >= DROP_THRESHOLD and verdict != "PASS"
 
@@ -155,11 +174,12 @@ def main():
             body = rubric
             if alert_drop:
                 body = f"PRICE DROP: -${drop:,} (was ${prev:,})\n\n{body}"
-            body += ai_review(v, verdict, stats)
+            if verdict in ("UNICORN", "GRAB"):
+                body += ai_review(v, verdict, stats)
             prefix = "NEW" if alert_new else f"DROP -${drop:,}"
             title = f"{prefix}: {yr} {mdl} - ${p:,}"
             vid = v.get("vehicleId") or v.get("stockNumber")
-            notify(vid, title, body)
+            notify(vid, title, body, priority=PRIORITY.get(verdict, 0))
             sent += 1
 
         SEEN[k] = p

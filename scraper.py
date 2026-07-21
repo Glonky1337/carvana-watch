@@ -20,7 +20,7 @@ CARVANA_URL = "https://apik.carvana.io/merch/search/api/v2/search"
 CARVANA_VDP = "https://www.carvana.com/vehicle/{}"
 CARFAX_URL = "https://www.carfax.com/VehicleHistory/p/Report.cfx?partner=CVN_0&vin={}"
 PUSHOVER_URL = "https://api.pushover.net/1/messages.json"
-GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
 DROP_THRESHOLD = 500
 PRIORITY = {"UNICORN": 1, "GRAB": 0, "FAIR": -1}
 NY_TAX_RATE = 0.0875
@@ -28,6 +28,22 @@ TITLE_REG_EST = 250
 ANNUAL_MILES = 6000
 MAX_PAGES = 10
 PAGE_SIZE = 100
+
+VDP_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br, zstd",
+    "sec-ch-ua": '"Chromium";v="131", "Not_A Brand";v="24", "Google Chrome";v="131"',
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": '"Windows"',
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
+    "Upgrade-Insecure-Requests": "1",
+    "Cache-Control": "max-age=0",
+}
 
 FILTERS = {
     "makes": [
@@ -115,15 +131,7 @@ def find_report_url(html, vin):
 
 def fetch_vdp_details(vehicle_id, vin):
     try:
-        resp = requests.get(
-            CARVANA_VDP.format(vehicle_id),
-            headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "Accept": "text/html,application/xhtml+xml",
-                "Accept-Language": "en-US,en;q=0.9",
-            },
-            timeout=20,
-        )
+        resp = requests.get(CARVANA_VDP.format(vehicle_id), headers=VDP_HEADERS, timeout=20)
         resp.raise_for_status()
         html = resp.text
 
@@ -148,9 +156,13 @@ def fetch_vdp_details(vehicle_id, vin):
                 "provider": provider, "report_url": report_url}
     except Exception as e:
         print(f"    VDP fetch error for {vehicle_id}: {e}")
+        fallback_provider, fallback_url = (None, None)
+        if vin:
+            fallback_provider = "CarFax"
+            fallback_url = CARFAX_URL.format(vin)
         return {"clean": None,
-                "summary": "History not verified — check history report link",
-                "provider": None, "report_url": None}
+                "summary": "History not verified — check report link",
+                "provider": fallback_provider, "report_url": fallback_url}
 
 def unavailable_reason(v):
     if v.get("isPurchasePending"):
@@ -355,7 +367,7 @@ def main():
             if alert_drop:
                 body = f"PRICE DROP: -${drop:,} (was ${prev:,})\n\n" + body
 
-            if verdict in ("UNICORN", "GRAB"):
+            if verdict in ("UNICORN", "GRAB", "FAIR"):
                 review = ai_review(v, verdict, stats, history)
                 if review:
                     body += "\n\n" + review

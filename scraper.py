@@ -36,28 +36,25 @@ def search():
     resp.raise_for_status()
     data = resp.json()
     vehicles = data.get("inventory", {}).get("vehicles", [])
-    print(f"Fetched {len(vehicles)} vehicles")
     if vehicles:
-        print("SAMPLE VEHICLE:")
-        print(json.dumps(vehicles[0], indent=2)[:3000])
+        print(f"ALL FIELDS: {sorted(vehicles[0].keys())}")
     return vehicles
 
 def analyze(v):
-    price = v.get("price", 0)
-    miles = v.get("mileage", 0)
-    ship = v.get("shippingFee", 0)
-    accidents = v.get("hasAccidents", False)
-    use = (v.get("priorUse") or "").lower()
-    model = (v.get("model") or "").lower()
+    p = v.get("price") or {}
+    price = int(p.get("total") or 0)
+    ship = int(p.get("transportCost") or 0)
+    kbb = int(p.get("kbbValue") or 0)
+    miles = int(v.get("mileage") or 0)
+    model = (v.get("parentModel") or v.get("model") or "").lower()
 
     effective = price + min(ship, 150)
     lifetime = 300 if "tacoma" in model else 220
     remaining_k = max(lifetime - miles/1000, 20)
     per_1k = effective / remaining_k
+    over_kbb = effective - kbb if kbb else 0
 
-    if accidents or use in ("rental", "fleet"):
-        verdict = "PASS"
-    elif miles < 80_000 and effective <= 14_000:
+    if miles < 80_000 and effective <= 14_000:
         verdict = "GRAB"
     elif miles < 100_000 and effective <= 13_000:
         verdict = "GRAB"
@@ -67,17 +64,21 @@ def analyze(v):
         verdict = "PASS"
 
     label = f"pickup ${effective:,}" if ship > 150 else f"ship ${effective:,}"
-    msg = f"VERDICT: {verdict}\nEFFECTIVE: {label}\n$/1K REMAINING: ${per_1k:.0f}\nMILES: {miles:,}"
+    kbb_note = f" (+${over_kbb:,} over KBB)" if over_kbb > 1000 else ""
+    msg = f"VERDICT: {verdict}\nEFFECTIVE: {label}{kbb_note}\n$/1K REMAINING: ${per_1k:.0f}\nMILES: {miles:,}"
     return verdict, msg
 
 def notify(v, msg):
-    vid = v.get("vehicleId") or v.get("id") or v.get("stockNumber")
+    vid = v.get("vehicleId") or v.get("stockNumber")
+    year = v.get("year") or v.get("modelYear") or ""
+    model = v.get("parentModel") or v.get("model") or ""
+    price = int((v.get("price") or {}).get("total") or 0)
     requests.post(
         "https://api.pushover.net/1/messages.json",
         data={
             "token": os.environ["PUSHOVER_TOKEN"],
             "user": os.environ["PUSHOVER_USER"],
-            "title": f"{v.get('year')} {v.get('model')} - ${v.get('price'):,}",
+            "title": f"{year} {model} - ${price:,}",
             "message": msg,
             "url": f"https://www.carvana.com/vehicle/{vid}",
             "url_title": "View listing",
@@ -87,14 +88,15 @@ def notify(v, msg):
 
 def main():
     vehicles = search()
-    key = lambda v: v.get("vin") or v.get("stockNumber")
+    key = lambda v: str(v.get("vehicleId") or v.get("stockNumber"))
     new = [v for v in vehicles if key(v) not in SEEN]
     print(f"{len(vehicles)} matches, {len(new)} new")
-    if vehicles and not new:
-        print("Sample keys:", list(vehicles[0].keys())[:15])
     for v in new:
         verdict, msg = analyze(v)
-        print(f"{v.get('year')} {v.get('model')} ${v.get('price')} -> {verdict}")
+        yr = v.get("year") or v.get("modelYear")
+        mdl = v.get("parentModel") or v.get("model")
+        pr = (v.get("price") or {}).get("total")
+        print(f"  {yr} {mdl} ${pr} @{v.get('mileage')}mi -> {verdict}")
         if verdict != "PASS":
             notify(v, msg)
         SEEN.append(key(v))

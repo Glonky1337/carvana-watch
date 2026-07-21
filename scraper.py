@@ -73,7 +73,7 @@ def notify(v, msg):
     year = v.get("year") or v.get("modelYear") or ""
     model = v.get("parentModel") or v.get("model") or ""
     price = int((v.get("price") or {}).get("total") or 0)
-    requests.post(
+    resp = requests.post(
         "https://api.pushover.net/1/messages.json",
         data={
             "token": os.environ["PUSHOVER_TOKEN"],
@@ -85,8 +85,21 @@ def notify(v, msg):
         },
         timeout=10,
     )
+    print(f"    Pushover: {resp.status_code} {resp.text[:300]}")
 
 def main():
+    test = requests.post(
+        "https://api.pushover.net/1/messages.json",
+        data={
+            "token": os.environ["PUSHOVER_TOKEN"],
+            "user": os.environ["PUSHOVER_USER"],
+            "title": "Carvana Watch test",
+            "message": "If you see this, Pushover is wired up correctly.",
+        },
+        timeout=10,
+    )
+    print(f"TEST NOTIFICATION: {test.status_code} {test.text[:300]}")
+
     vehicles = search()
     key = lambda v: str(v.get("vehicleId") or v.get("stockNumber"))
     new = [v for v in vehicles if key(v) not in SEEN]
@@ -101,6 +114,3 @@ def main():
             notify(v, msg)
         SEEN.append(key(v))
     SEEN_FILE.write_text(json.dumps(SEEN))
-
-if __name__ == "__main__":
-    main()

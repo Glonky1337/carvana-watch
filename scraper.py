@@ -2,10 +2,21 @@ import os, json, requests
 from pathlib import Path
 
 SEEN_FILE = Path("seen.json")
-SEEN = set(json.loads(SEEN_FILE.read_text())) if SEEN_FILE.exists() else set()
+
+def load_seen():
+    if not SEEN_FILE.exists():
+        return {}
+    raw = json.loads(SEEN_FILE.read_text())
+    if isinstance(raw, list):
+        return {vid: 0 for vid in raw}
+    return raw
+
+SEEN = load_seen()
 
 CARVANA_URL = "https://apik.carvana.io/merch/search/api/v2/search"
 PUSHOVER_URL = "https://api.pushover.net/1/messages.json"
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
+DROP_THRESHOLD = 500
 
 def search():
     resp = requests.post(
@@ -64,21 +75,51 @@ def analyze(v):
 
     label = f"pickup ${effective:,}" if ship > 150 else f"ship ${effective:,}"
     kbb_note = f" (+${over_kbb:,} over KBB)" if over_kbb > 1000 else ""
-    msg = f"VERDICT: {verdict}\nEFFECTIVE: {label}{kbb_note}\n$/1K REMAINING: ${per_1k:.0f}\nMILES: {miles:,}"
-    return verdict, msg
+    rubric = f"VERDICT: {verdict}\nEFFECTIVE: {label}{kbb_note}\n$/1K REMAINING: ${per_1k:.0f}\nMILES: {miles:,}"
+    return verdict, rubric, {
+        "price": price, "ship": ship, "kbb": kbb, "miles": miles,
+        "effective": effective, "per_1k": per_1k,
+    }
 
-def notify(v, msg):
-    vid = v.get("vehicleId") or v.get("stockNumber")
-    year = v.get("year") or ""
-    model = v.get("parentModel") or v.get("model") or ""
-    price = int((v.get("price") or {}).get("total") or 0)
+def ai_review(v, verdict, stats):
+    key = os.environ.get("GEMINI_API_KEY")
+    if not key:
+        return ""
+    prompt = f"""You are helping Kevin decide on a used car listing. He lives in Depew NY, drives ~6k mi/year, and wants an occasional-use vehicle that's cheap to insure (Camry LE, Corolla LE, or Tacoma).
+
+CAR: {v.get('year')} Toyota {v.get('parentModel')} {v.get('trim', '')}
+COLOR: {v.get('color')}
+MILEAGE: {stats['miles']:,}
+PRICE: ${stats['price']:,}
+SHIPPING: ${stats['ship']:,} (Kevin can pickup from Latham NY for ~$150)
+KBB VALUE: ${stats['kbb']:,}
+EFFECTIVE PRICE: ${stats['effective']:,}
+$ PER 1K REMAINING MILES: ${stats['per_1k']:.0f}
+KEVIN'S RUBRIC SAYS: {verdict}
+
+Give a 2-3 sentence recommendation. Consider: is the KBB gap reasonable? Is the mileage sweet-spot for Toyota longevity? Any red flags in the trim or price positioning? End with a single word on its own line: BUY, MAYBE, or SKIP."""
+
+    try:
+        resp = requests.post(
+            f"{GEMINI_URL}?key={key}",
+            json={"contents": [{"parts": [{"text": prompt}]}]},
+            timeout=20,
+        )
+        resp.raise_for_status()
+        text = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+        return f"\n---\nAI REVIEW:\n{text}"
+    except Exception as e:
+        print(f"    Gemini error: {e}")
+        return ""
+
+def notify(vid, title, body):
     resp = requests.post(
         PUSHOVER_URL,
         data={
             "token": os.environ["PUSHOVER_TOKEN"],
             "user": os.environ["PUSHOVER_USER"],
-            "title": f"{year} {model} - ${price:,}",
-            "message": msg,
+            "title": title,
+            "message": body,
             "url": f"https://www.carvana.com/vehicle/{vid}",
             "url_title": "View listing",
         },
@@ -92,19 +133,39 @@ def key(v):
 
 def main():
     vehicles = search()
-    new = [v for v in vehicles if key(v) not in SEEN]
-    print(f"{len(vehicles)} matches, {len(new)} new")
-    for v in new:
-        verdict, msg = analyze(v)
+    sent = 0
+    for v in vehicles:
+        k = key(v)
+        p = int((v.get("price") or {}).get("total") or 0)
+        prev = SEEN.get(k)
+        verdict, rubric, stats = analyze(v)
+
+        is_new = prev is None
+        drop = (prev - p) if prev else 0
+        alert_new = is_new and verdict != "PASS"
+        alert_drop = (not is_new) and drop >= DROP_THRESHOLD and verdict != "PASS"
+
         yr = v.get("year")
         mdl = v.get("parentModel") or v.get("model")
-        pr = int((v.get("price") or {}).get("total") or 0)
-        mi = v.get("mileage") or 0
-        print(f"  {yr} {mdl} ${pr:,} @{mi:,}mi -> {verdict}")
-        if verdict != "PASS":
-            notify(v, msg)
-        SEEN.add(key(v))
-    SEEN_FILE.write_text(json.dumps(sorted(SEEN)))
+        print(f"  {yr} {mdl} ${p:,} @{stats['miles']:,}mi -> {verdict}"
+              f"{' [NEW]' if alert_new else ''}"
+              f"{f' [DROP -${drop:,}]' if alert_drop else ''}")
+
+        if alert_new or alert_drop:
+            body = rubric
+            if alert_drop:
+                body = f"PRICE DROP: -${drop:,} (was ${prev:,})\n\n{body}"
+            body += ai_review(v, verdict, stats)
+            prefix = "NEW" if alert_new else f"DROP -${drop:,}"
+            title = f"{prefix}: {yr} {mdl} - ${p:,}"
+            vid = v.get("vehicleId") or v.get("stockNumber")
+            notify(vid, title, body)
+            sent += 1
+
+        SEEN[k] = p
+
+    print(f"{len(vehicles)} matches, {sent} notifications sent")
+    SEEN_FILE.write_text(json.dumps(SEEN, indent=2, sort_keys=True))
 
 if __name__ == "__main__":
     main()

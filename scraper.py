@@ -35,20 +35,12 @@ def search():
     )
     resp.raise_for_status()
     data = resp.json()
-    print("TOP KEYS:", list(data.keys()))
-    for k, v in data.items():
-        if isinstance(v, list):
-            sample_type = type(v[0]).__name__ if v else "empty"
-            print(f"  {k}: list[{len(v)}] of {sample_type}")
-            if v and isinstance(v[0], dict):
-                print(f"    first item keys: {list(v[0].keys())}")
-                print(f"    first item sample: {json.dumps(v[0], indent=2)[:2000]}")
-            elif v:
-                print(f"    first item value: {str(v[0])[:300]}")
-        elif isinstance(v, dict):
-            print(f"  {k}: dict keys {list(v.keys())}")
-    vehicles = data.get("vehicles") or data.get("results") or data.get("inventory") or []
-    return [v for v in vehicles if isinstance(v, dict)]
+    vehicles = data.get("inventory", {}).get("vehicles", [])
+    print(f"Fetched {len(vehicles)} vehicles")
+    if vehicles:
+        print("SAMPLE VEHICLE:")
+        print(json.dumps(vehicles[0], indent=2)[:3000])
+    return vehicles
 
 def analyze(v):
     price = v.get("price", 0)

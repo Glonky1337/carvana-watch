@@ -20,7 +20,7 @@ CARVANA_URL = "https://apik.carvana.io/merch/search/api/v2/search"
 CARVANA_VDP = "https://www.carvana.com/vehicle/{}"
 CARFAX_URL = "https://www.carfax.com/VehicleHistory/p/Report.cfx?partner=CVN_0&vin={}"
 PUSHOVER_URL = "https://api.pushover.net/1/messages.json"
-GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent"
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-lite-latest:generateContent"
 DROP_THRESHOLD = 500
 PRIORITY = {"UNICORN": 1, "GRAB": 0, "FAIR": -1}
 NY_TAX_RATE = 0.0875

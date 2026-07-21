@@ -19,6 +19,7 @@ jobs:
         env:
           PUSHOVER_TOKEN: ${{ secrets.PUSHOVER_TOKEN }}
           PUSHOVER_USER: ${{ secrets.PUSHOVER_USER }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       - run: |
           git config user.name github-actions
           git config user.email actions@github.com

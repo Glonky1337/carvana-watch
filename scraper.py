@@ -280,7 +280,7 @@ Give Kevin a plain-English take in 2-3 sentences. Rules:
 - Compare price to KBB using vehicle+shipping (${stats['effective']:,}), NOT out-the-door.
 - If history isn't verified by the scraper, that's neutral — Kevin will click the CarFax link himself before buying. Don't treat it as a red flag on its own.
 - Flag known year/model problems if any (transmission, oil consumption, VTC actuator rattle, etc.).
-- If a CarFax URL is provided and you can access it, use what it actually says.
+- If a CarFax URL is provided, attempt to fetch it. Start your response with either "CarFax read: [key finding]" or "CarFax not accessible" so Kevin knows.
 - Consider the price-drop and days-on-market signals if given.
 - End with one line that's just BUY, MAYBE, or SKIP."""
 

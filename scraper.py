@@ -260,7 +260,17 @@ def ai_review(v, verdict, stats, history):
 
     report_block = ""
     if history.get("report_url"):
-        report_block = f"\nVehicle history report ({history.get('provider', 'CarFax')}): {history['report_url']}\nIf you can access this URL, read it and factor accidents/owner count/service records/mileage consistency into your take."
+        vid_for_url = v.get("vehicleId") or v.get("stockNumber")
+        vdp_url = f"https://www.carvana.com/vehicle/{vid_for_url}"
+        report_block = f"""
+Vehicle history report: {history['report_url']}
+Carvana listing page (has "History: No reported accidents" summary + 150-point inspection): {vdp_url}
+
+Attempt to fetch BOTH URLs. Start your response with one of:
+- "History verified via Carvana VDP: [what it said]"
+- "History verified via CarFax: [what it said]"
+- "Neither URL accessible — Kevin needs to check the link himself"
+Then continue with the recommendation."""
 
     prompt = f"""Kevin is looking at a used car on Carvana. He lives in Depew NY, drives about 6k miles a year for leisure (not commuting), and wants something reliable and cheap to insure.
 
@@ -280,7 +290,7 @@ Give Kevin a plain-English take in 2-3 sentences. Rules:
 - Compare price to KBB using vehicle+shipping (${stats['effective']:,}), NOT out-the-door.
 - If history isn't verified by the scraper, that's neutral — Kevin will click the CarFax link himself before buying. Don't treat it as a red flag on its own.
 - Flag known year/model problems if any (transmission, oil consumption, VTC actuator rattle, etc.).
-- If a CarFax URL is provided, attempt to fetch it. Start your response with either "CarFax read: [key finding]" or "CarFax not accessible" so Kevin knows.
+- If a CarFax URL is provided and you can access it, use what it actually says.
 - Consider the price-drop and days-on-market signals if given.
 - End with one line that's just BUY, MAYBE, or SKIP."""
 
@@ -341,7 +351,8 @@ def test_gemini():
     print("=== END MODELS ===")
 
     print("=== GEMINI TEST ===")
-    test_v = {"year": 2014, "make": "Toyota", "parentModel": "Corolla", "trim": "LE", "color": "Silver"}
+    test_v = {"year": 2014, "make": "Toyota", "parentModel": "Corolla", "trim": "LE", "color": "Silver",
+              "vehicleId": 4528842}
     test_stats = {"price": 13990, "ship": 500, "kbb": 14000, "miles": 85000,
                   "effective": 14490, "out_the_door": 15800, "per_1k": 107,
                   "kbb_gap": 490, "life_pct": 39, "lifetime": 220, "years_left": 22}

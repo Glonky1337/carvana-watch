@@ -20,7 +20,7 @@ CARVANA_URL = "https://apik.carvana.io/merch/search/api/v2/search"
 CARVANA_VDP = "https://www.carvana.com/vehicle/{}"
 CARFAX_URL = "https://www.carfax.com/VehicleHistory/p/Report.cfx?partner=CVN_0&vin={}"
 PUSHOVER_URL = "https://api.pushover.net/1/messages.json"
-GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent"
 DROP_THRESHOLD = 500
 PRIORITY = {"UNICORN": 1, "GRAB": 0, "FAIR": -1}
 NY_TAX_RATE = 0.0875
@@ -289,9 +289,25 @@ def key(v):
     return str(v.get("vehicleId") or v.get("stockNumber"))
 
 def test_gemini():
-    if not os.environ.get("GEMINI_API_KEY"):
+    key = os.environ.get("GEMINI_API_KEY")
+    if not key:
         print("=== GEMINI TEST: skipped (no key) ===")
         return
+
+    print("=== GEMINI AVAILABLE MODELS ===")
+    try:
+        resp = requests.get(
+            f"https://generativelanguage.googleapis.com/v1beta/models?key={key}",
+            timeout=20,
+        )
+        resp.raise_for_status()
+        for m in resp.json().get("models", []):
+            if "generateContent" in m.get("supportedGenerationMethods", []):
+                print(f"  {m.get('name', '?')}")
+    except Exception as e:
+        print(f"  ERROR listing models: {e}")
+    print("=== END MODELS ===")
+
     print("=== GEMINI TEST ===")
     test_v = {"year": 2014, "make": "Toyota", "parentModel": "Corolla", "trim": "LE", "color": "Silver"}
     test_stats = {"price": 13990, "ship": 500, "kbb": 14000, "miles": 85000,
@@ -302,7 +318,7 @@ def test_gemini():
     if result:
         print(result)
     else:
-        print("(no response — check GEMINI_API_KEY secret or Gemini quota)")
+        print("(no response — see error above and cross-ref with the model list)")
     print("=== END GEMINI TEST ===")
 
 def main():

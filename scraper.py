@@ -239,23 +239,25 @@ def main():
         prev = SEEN.get(k)
         verdict, rubric, stats = analyze(v)
 
+        yr = v.get("year")
+        mdl = v.get("parentModel") or v.get("model")
+        trim = v.get("trim", "")
+        miles = stats["miles"]
+
+        skip = unavailable_reason(v)
+        if skip:
+            print(f"  {yr} {mdl} {trim} ${p:,} @{miles:,}mi -> SKIP: {skip}")
+            SEEN[k] = p
+            continue
+
         is_new = prev is None
         drop = (prev - p) if prev is not None else 0
         alert_new = is_new and verdict != "PASS"
         alert_drop = (not is_new) and drop >= DROP_THRESHOLD and verdict != "PASS"
 
-        yr = v.get("year")
-        mdl = v.get("parentModel") or v.get("model")
-        trim = v.get("trim", "")
-        skip = unavailable_reason(v)
-        print(f"  {yr} {mdl} {trim} ${p:,} @{stats['miles']:,}mi -> {verdict}"
-              f"{f' [SKIP: {skip}]' if skip else ''}"
-              f"{' [NEW]' if alert_new and not skip else ''}"
-              f"{f' [DROP -${drop:,}]' if alert_drop and not skip else ''}")
-
-        if skip:
-            SEEN[k] = p
-            continue
+        print(f"  {yr} {mdl} {trim} ${p:,} @{miles:,}mi -> {verdict}"
+              f"{' [NEW]' if alert_new else ''}"
+              f"{f' [DROP -${drop:,}]' if alert_drop else ''}")
 
         if alert_new or alert_drop:
             vid = v.get("vehicleId") or v.get("stockNumber")

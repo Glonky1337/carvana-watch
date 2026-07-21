@@ -59,14 +59,21 @@ def search():
 
 def unavailable_reason(v):
     if v.get("isPurchasePending"):
-        return "pending"
-    hero = str(v.get("standardizedHero") or "")
-    hero_norm = hero.lower().replace(" ", "").replace("-", "")
-    if "preorder" in hero_norm or "purchaseinprogress" in hero_norm:
-        return f"hero={hero}"
-    inv = str(v.get("vehicleInventoryType") or "").lower()
-    if "preorder" in inv.replace("-", "").replace("_", ""):
-        return f"inventoryType={v.get('vehicleInventoryType')}"
+        return "purchase in progress"
+
+    tag_blob = " ".join(
+        f"{t.get('tagKey','')} {t.get('tagName','')}".lower()
+        for t in (v.get("vehicleTags") or [])
+    )
+    if "preorder" in tag_blob.replace("-", "").replace(" ", ""):
+        return "pre-order"
+    if "purchaseinprogress" in tag_blob.replace(" ", ""):
+        return "purchase in progress"
+
+    fulfillment = str(v.get("fulfillmentType") or "").lower().replace("-", "").replace("_", "")
+    if "preorder" in fulfillment:
+        return f"fulfillmentType={v.get('fulfillmentType')}"
+
     return None
 
 def analyze(v):
@@ -182,12 +189,23 @@ def main():
         notify("", "Carvana Watch broken", f"search() failed: {e}", priority=1)
         raise
 
+    all_tags = set()
+    for v in vehicles:
+        for t in (v.get("vehicleTags") or []):
+            all_tags.add((t.get("tagKey"), t.get("tagName")))
+    print(f"ALL UNIQUE TAGS ACROSS BATCH: {sorted(all_tags)}")
+
     for i, v in enumerate(vehicles[:5]):
-        print(f"  SAMPLE #{i}: hero={v.get('standardizedHero')} "
+        print(f"  SAMPLE #{i} [{v.get('vehicleId')}]: "
               f"inventoryType={v.get('vehicleInventoryType')} "
+              f"purchaseType={v.get('vehiclePurchaseType')} "
+              f"lockType={v.get('vehicleLockType')} "
+              f"fulfillmentType={v.get('fulfillmentType')} "
               f"pending={v.get('isPurchasePending')} "
               f"onDemand={v.get('isOnDemand')} "
-              f"tags={v.get('vehicleTags')}")
+              f"reservable={v.get('vehicleReservableReasons')} "
+              f"days={v.get('analyticsOnlyGetItByDays')} "
+              f"tagKeys={[t.get('tagKey') for t in (v.get('vehicleTags') or [])]}")
 
     sent = 0
     for v in vehicles:

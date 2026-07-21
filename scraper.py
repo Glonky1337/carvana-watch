@@ -114,3 +114,6 @@ def main():
             notify(v, msg)
         SEEN.append(key(v))
     SEEN_FILE.write_text(json.dumps(SEEN))
+
+if __name__ == "__main__":
+    main()

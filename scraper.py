@@ -64,8 +64,9 @@ def analyze(v):
 
     effective = price + min(ship, 150)
     lifetime = 300 if "tacoma" in model else 220
-    remaining_k = max(lifetime - miles / 1000, 20)
-    per_1k = effective / remaining_k
+    remaining_miles = max(lifetime * 1000 - miles, 20_000)
+    life_pct = min(int(miles / (lifetime * 1000) * 100), 99)
+    per_1k = effective / (remaining_miles / 1000)
     kbb_gap = effective - kbb if kbb else 0
 
     if kbb and kbb_gap <= -500 and miles < 90_000 and per_1k <= 90:
@@ -78,52 +79,29 @@ def analyze(v):
     else:
         verdict = "PASS"
 
-    label = f"pickup ${effective:,}" if ship > 150 else f"ship ${effective:,}"
+    price_line = f"Best price: ${effective:,} (pickup from Latham NY)" if ship > 150 else f"Delivered: ${effective:,}"
     if kbb and kbb_gap <= -100:
-        kbb_note = f" (${abs(kbb_gap):,} UNDER KBB)"
-    elif kbb and kbb_gap > 1000:
-        kbb_note = f" (+${kbb_gap:,} over KBB)"
+        kbb_line = f"${abs(kbb_gap):,} UNDER Kelly Blue Book value"
+    elif kbb and kbb_gap > 100:
+        kbb_line = f"${kbb_gap:,} over Kelly Blue Book value"
     elif kbb:
-        kbb_note = " (near KBB)"
+        kbb_line = "Priced right at Kelly Blue Book value"
     else:
-        kbb_note = ""
+        kbb_line = ""
 
-    rubric = f"VERDICT: {verdict}\nEFFECTIVE: {label}{kbb_note}\n$/1K REMAINING: ${per_1k:.0f}\nMILES: {miles:,}"
+    miles_line = f"Mileage: {miles:,} (about {life_pct}% of typical {lifetime}k life used)"
+
+    lines = [price_line]
+    if kbb_line:
+        lines.append(kbb_line)
+    lines.append(miles_line)
+    rubric = "\n".join(lines)
+
     return verdict, rubric, {
         "price": price, "ship": ship, "kbb": kbb, "miles": miles,
         "effective": effective, "per_1k": per_1k, "kbb_gap": kbb_gap,
+        "life_pct": life_pct, "lifetime": lifetime,
     }
-
-def ai_review(v, verdict, stats):
-    key = os.environ.get("GEMINI_API_KEY")
-    if not key:
-        return ""
-    prompt = f"""You are helping Kevin decide on a used car listing. He lives in Depew NY, drives ~6k mi/year, and wants an occasional-use vehicle that's cheap to insure (Camry LE, Corolla LE, or Tacoma).
-
-CAR: {v.get('year')} Toyota {v.get('parentModel')} {v.get('trim', '')}
-COLOR: {v.get('color')}
-MILEAGE: {stats['miles']:,}
-PRICE: ${stats['price']:,}
-SHIPPING: ${stats['ship']:,} (Kevin can pickup from Latham NY for ~$150)
-KBB VALUE: ${stats['kbb']:,}
-EFFECTIVE PRICE: ${stats['effective']:,}
-$ PER 1K REMAINING MILES: ${stats['per_1k']:.0f}
-KEVIN'S RUBRIC SAYS: {verdict}
-
-Give a 2-3 sentence recommendation. Consider: is the KBB gap reasonable? Is the mileage sweet-spot for Toyota longevity? Any red flags in the trim or price positioning? End with a single word on its own line: BUY, MAYBE, or SKIP."""
-
-    try:
-        resp = requests.post(
-            f"{GEMINI_URL}?key={key}",
-            json={"contents": [{"parts": [{"text": prompt}]}]},
-            timeout=20,
-        )
-        resp.raise_for_status()
-        text = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
-        return f"\n---\nAI REVIEW:\n{text}"
-    except Exception as e:
-        print(f"    Gemini error: {e}")
-        return ""
 
 def notify(vid, title, body, priority=0):
     resp = requests.post(
@@ -152,6 +130,13 @@ def main():
         notify("", "Carvana Watch broken", f"search() failed: {e}", priority=1)
         raise
 
+    if vehicles:
+        v0 = vehicles[0]
+        print("SAMPLE tags:", v0.get("vehicleTags"))
+        print("SAMPLE hero:", v0.get("standardizedHero"))
+        print("SAMPLE recall:", v0.get("stockRecallStatusType"))
+        print("SAMPLE inventoryType:", v0.get("vehicleInventoryType"))
+
     sent = 0
     for v in vehicles:
         k = key(v)
@@ -166,16 +151,30 @@ def main():
 
         yr = v.get("year")
         mdl = v.get("parentModel") or v.get("model")
-        print(f"  {yr} {mdl} ${p:,} @{stats['miles']:,}mi -> {verdict}"
+        trim = v.get("trim", "")
+        pending = bool(v.get("isPurchasePending"))
+        print(f"  {yr} {mdl} {trim} ${p:,} @{stats['miles']:,}mi -> {verdict}"
+              f"{' [PENDING]' if pending else ''}"
               f"{' [NEW]' if alert_new else ''}"
               f"{f' [DROP -${drop:,}]' if alert_drop else ''}")
 
+        if pending:
+            SEEN[k] = p
+            continue
+
         if alert_new or alert_drop:
-            body = rubric
+            headline = {
+                "UNICORN": "UNICORN — rare find, buy now",
+                "GRAB": "GRAB — good deal",
+                "FAIR": "FAIR — worth a look",
+            }.get(verdict, verdict)
+
+            body = f"{headline}\n{yr} Toyota {mdl} {trim}".strip() + "\n\n" + rubric
             if alert_drop:
-                body = f"PRICE DROP: -${drop:,} (was ${prev:,})\n\n{body}"
+                body = f"PRICE DROP: -${drop:,} (was ${prev:,})\n\n" + body
             if verdict in ("UNICORN", "GRAB"):
-                body += ai_review(v, verdict, stats)
+                body += "\n\n" + ai_review(v, verdict, stats)
+
             prefix = "NEW" if alert_new else f"DROP -${drop:,}"
             title = f"{prefix}: {yr} {mdl} - ${p:,}"
             vid = v.get("vehicleId") or v.get("stockNumber")

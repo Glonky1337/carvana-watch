@@ -20,7 +20,7 @@ CARVANA_URL = "https://apik.carvana.io/merch/search/api/v2/search"
 CARVANA_VDP = "https://www.carvana.com/vehicle/{}"
 CARFAX_URL = "https://www.carfax.com/VehicleHistory/p/Report.cfx?partner=CVN_0&vin={}"
 PUSHOVER_URL = "https://api.pushover.net/1/messages.json"
-GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
 DROP_THRESHOLD = 500
 PRIORITY = {"UNICORN": 1, "GRAB": 0, "FAIR": -1}
 NY_TAX_RATE = 0.0875
@@ -85,7 +85,9 @@ def search():
         vehicles = inventory.get("vehicles", [])
 
         if page == 1:
-            print(f"pagination info: {inventory.get('pagination')}")
+            pg = inventory.get("pagination", {})
+            total = pg.get("totalMatchedInventory", "?")
+            print(f"Total matched inventory: {total}")
 
         if not vehicles:
             break
@@ -191,7 +193,7 @@ def analyze(v):
     elif kbb_gap <= 500 and ((miles < 80_000 and effective <= 14_000) or
                               (miles < 100_000 and effective <= 13_000)):
         verdict = "GRAB"
-    elif miles < 110_000 and per_1k <= 130 and kbb_gap <= 2000 and effective <= 15_500:
+    elif miles < 110_000 and per_1k <= 130 and kbb_gap <= 3000 and effective <= 16_000:
         verdict = "FAIR"
     else:
         verdict = "PASS"

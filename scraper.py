@@ -103,6 +103,33 @@ def analyze(v):
         "life_pct": life_pct, "lifetime": lifetime,
     }
 
+def ai_review(v, verdict, stats):
+    key = os.environ.get("GEMINI_API_KEY")
+    if not key:
+        return ""
+    prompt = f"""Kevin is looking at a used Toyota on Carvana. He lives in Depew NY, drives about 6k miles a year, and wants something reliable and cheap to insure.
+
+Car: {v.get('year')} Toyota {v.get('parentModel')} {v.get('trim', '')} ({v.get('color')})
+Miles: {stats['miles']:,} (about {stats['life_pct']}% through its typical {stats['lifetime']}k-mile life)
+Best price: ${stats['effective']:,} ({'pickup from Latham NY' if stats['ship'] > 150 else 'delivered'})
+Kelly Blue Book: ${stats['kbb']:,}
+His rubric flagged this as: {verdict}
+
+Give Kevin a plain-English take in 2-3 sentences. No jargon. Talk to him like a friend who knows cars. End with one line that's just BUY, MAYBE, or SKIP."""
+
+    try:
+        resp = requests.post(
+            f"{GEMINI_URL}?key={key}",
+            json={"contents": [{"parts": [{"text": prompt}]}]},
+            timeout=20,
+        )
+        resp.raise_for_status()
+        text = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+        return f"---\nWhat I think:\n{text}"
+    except Exception as e:
+        print(f"    Gemini error: {e}")
+        return ""
+
 def notify(vid, title, body, priority=0):
     resp = requests.post(
         PUSHOVER_URL,
@@ -173,7 +200,9 @@ def main():
             if alert_drop:
                 body = f"PRICE DROP: -${drop:,} (was ${prev:,})\n\n" + body
             if verdict in ("UNICORN", "GRAB"):
-                body += "\n\n" + ai_review(v, verdict, stats)
+                review = ai_review(v, verdict, stats)
+                if review:
+                    body += "\n\n" + review
 
             prefix = "NEW" if alert_new else f"DROP -${drop:,}"
             title = f"{prefix}: {yr} {mdl} - ${p:,}"

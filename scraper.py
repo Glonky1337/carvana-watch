@@ -32,14 +32,31 @@ def search():
         CARVANA_URL,
         json={
             "filters": {
-                "makes": [{
-                    "name": "Toyota",
-                    "parentModels": [
-                        {"name": "Camry"},
-                        {"name": "Corolla"},
-                        {"name": "Tacoma"},
-                    ],
-                }],
+                "makes": [
+                    {
+                        "name": "Toyota",
+                        "parentModels": [
+                            {"name": "Camry"},
+                            {"name": "Corolla"},
+                            {"name": "Tacoma"},
+                            {"name": "RAV4"},
+                        ],
+                    },
+                    {
+                        "name": "Honda",
+                        "parentModels": [
+                            {"name": "Civic"},
+                            {"name": "Accord"},
+                            {"name": "CR-V"},
+                        ],
+                    },
+                    {
+                        "name": "Mazda",
+                        "parentModels": [
+                            {"name": "Mazda3"},
+                        ],
+                    },
+                ],
                 "price": {"max": 16000},
                 "mileage": {"max": 110000},
             },
@@ -118,6 +135,13 @@ def unavailable_reason(v):
         return "pre-order"
     return None
 
+def lifetime_miles(model):
+    if "tacoma" in model:
+        return 300
+    if "rav4" in model or "cr-v" in model or "crv" in model:
+        return 250
+    return 220
+
 def analyze(v):
     p = v.get("price") or {}
     price = int(p.get("total") or 0)
@@ -131,7 +155,7 @@ def analyze(v):
     fees = sales_tax + TITLE_REG_EST
     out_the_door = effective + fees
 
-    lifetime = 300 if "tacoma" in model else 220
+    lifetime = lifetime_miles(model)
     remaining_miles = max(lifetime * 1000 - miles, 20_000)
     life_pct = min(int(miles / (lifetime * 1000) * 100), 99)
     years_left = remaining_miles / ANNUAL_MILES
@@ -181,16 +205,17 @@ def ai_review(v, verdict, stats, history):
     key = os.environ.get("GEMINI_API_KEY")
     if not key:
         return ""
-    prompt = f"""Kevin is looking at a used Toyota on Carvana. He lives in Depew NY, drives about 6k miles a year, and wants something reliable and cheap to insure.
+    make = v.get("make") or "Toyota"
+    prompt = f"""Kevin is looking at a used car on Carvana. He lives in Depew NY, drives about 6k miles a year for leisure (not commuting), and wants something reliable and cheap to insure.
 
-Car: {v.get('year')} Toyota {v.get('parentModel')} {v.get('trim', '')} ({v.get('color')})
+Car: {v.get('year')} {make} {v.get('parentModel')} {v.get('trim', '')} ({v.get('color')})
 Miles: {stats['miles']:,} ({stats['life_pct']}% through its typical {stats['lifetime']}k-mile life; would last him ~{stats['years_left']:.0f} more years at his usage)
 Out-the-door price: ${stats['out_the_door']:,} (vehicle + shipping + NY tax + fees)
 Kelly Blue Book: ${stats['kbb']:,}
 Vehicle history: {history['summary']}
 His rubric flagged this as: {verdict}
 
-Give Kevin a plain-English take in 2-3 sentences. No jargon. Talk to him like a friend who knows cars. If there's an accident on record, weight that heavily. End with one line that's just BUY, MAYBE, or SKIP."""
+Give Kevin a plain-English take in 2-3 sentences. No jargon. Talk to him like a friend who knows cars. Flag any known problems with this specific year/model (transmission issues, oil consumption, etc.). If there's an accident on record, weight that heavily. End with one line that's just BUY, MAYBE, or SKIP."""
 
     try:
         resp = requests.post(
@@ -240,13 +265,14 @@ def main():
         verdict, rubric, stats = analyze(v)
 
         yr = v.get("year")
+        make = v.get("make") or ""
         mdl = v.get("parentModel") or v.get("model")
         trim = v.get("trim", "")
         miles = stats["miles"]
 
         skip = unavailable_reason(v)
         if skip:
-            print(f"  {yr} {mdl} {trim} ${p:,} @{miles:,}mi -> SKIP: {skip}")
+            print(f"  {yr} {make} {mdl} {trim} ${p:,} @{miles:,}mi -> SKIP: {skip}")
             SEEN[k] = p
             continue
 
@@ -255,7 +281,7 @@ def main():
         alert_new = is_new and verdict != "PASS"
         alert_drop = (not is_new) and drop >= DROP_THRESHOLD and verdict != "PASS"
 
-        print(f"  {yr} {mdl} {trim} ${p:,} @{miles:,}mi -> {verdict}"
+        print(f"  {yr} {make} {mdl} {trim} ${p:,} @{miles:,}mi -> {verdict}"
               f"{' [NEW]' if alert_new else ''}"
               f"{f' [DROP -${drop:,}]' if alert_drop else ''}")
 
@@ -277,7 +303,7 @@ def main():
                 "FAIR": "FAIR: worth a look",
             }.get(verdict, verdict)
 
-            body = f"{headline}\n{yr} Toyota {mdl} {trim}".strip() + "\n\n" + rubric
+            body = f"{headline}\n{yr} {make} {mdl} {trim}".strip() + "\n\n" + rubric
             body += f"\n\n{history['summary']}"
 
             if alert_drop:
@@ -294,7 +320,7 @@ def main():
                 body += f"\n\nFull CarFax: {CARFAX_URL.format(vin)}"
 
             prefix = "NEW" if alert_new else f"DROP -${drop:,}"
-            title = f"{prefix}: {yr} {mdl} - ${p:,}"
+            title = f"{prefix}: {yr} {make} {mdl} - ${p:,}"
             notify(vid, title, body, priority=PRIORITY.get(verdict, 0))
             sent += 1
 

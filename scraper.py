@@ -1,4 +1,4 @@
-import os, json, re, requests
+import os, json, re, time, requests
 from pathlib import Path
 
 SEEN_FILE = Path("seen.json")
@@ -26,55 +26,79 @@ PRIORITY = {"UNICORN": 1, "GRAB": 0, "FAIR": -1}
 NY_TAX_RATE = 0.0875
 TITLE_REG_EST = 250
 ANNUAL_MILES = 6000
+MAX_PAGES = 10
+PAGE_SIZE = 100
+
+FILTERS = {
+    "makes": [
+        {
+            "name": "Toyota",
+            "parentModels": [
+                {"name": "Camry"},
+                {"name": "Corolla"},
+                {"name": "Tacoma"},
+                {"name": "RAV4"},
+            ],
+        },
+        {
+            "name": "Honda",
+            "parentModels": [
+                {"name": "Civic"},
+                {"name": "Accord"},
+                {"name": "CR-V"},
+            ],
+        },
+        {
+            "name": "Mazda",
+            "parentModels": [
+                {"name": "Mazda3"},
+            ],
+        },
+    ],
+    "price": {"max": 16000},
+    "mileage": {"max": 110000},
+}
 
 def search():
-    resp = requests.post(
-        CARVANA_URL,
-        json={
-            "filters": {
-                "makes": [
-                    {
-                        "name": "Toyota",
-                        "parentModels": [
-                            {"name": "Camry"},
-                            {"name": "Corolla"},
-                            {"name": "Tacoma"},
-                            {"name": "RAV4"},
-                        ],
-                    },
-                    {
-                        "name": "Honda",
-                        "parentModels": [
-                            {"name": "Civic"},
-                            {"name": "Accord"},
-                            {"name": "CR-V"},
-                        ],
-                    },
-                    {
-                        "name": "Mazda",
-                        "parentModels": [
-                            {"name": "Mazda3"},
-                        ],
-                    },
-                ],
-                "price": {"max": 16000},
-                "mileage": {"max": 110000},
+    all_vehicles = []
+    for page in range(1, MAX_PAGES + 1):
+        resp = requests.post(
+            CARVANA_URL,
+            json={
+                "filters": FILTERS,
+                "pagination": {"page": page, "pageSize": PAGE_SIZE},
+                "sortBy": "MostPopular",
+                "zip5": "14043",
             },
-            "pagination": {"page": 1, "pageSize": 100},
-            "sortBy": "MostPopular",
-            "zip5": "14043",
-        },
-        headers={
-            "User-Agent": "Mozilla/5.0",
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-            "Origin": "https://www.carvana.com",
-            "Referer": "https://www.carvana.com/",
-        },
-        timeout=30,
-    )
-    resp.raise_for_status()
-    return resp.json().get("inventory", {}).get("vehicles", [])
+            headers={
+                "User-Agent": "Mozilla/5.0",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "Origin": "https://www.carvana.com",
+                "Referer": "https://www.carvana.com/",
+            },
+            timeout=30,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        inventory = data.get("inventory", {})
+        vehicles = inventory.get("vehicles", [])
+
+        if page == 1:
+            print(f"pagination info: {inventory.get('pagination')}")
+
+        if not vehicles:
+            break
+
+        all_vehicles.extend(vehicles)
+
+        if len(vehicles) < PAGE_SIZE:
+            break
+
+        time.sleep(0.5)
+
+    print(f"Fetched {len(all_vehicles)} vehicles across {page} pages")
+    return all_vehicles
 
 def find_report_url(html, vin):
     m = re.search(r'href="(https://www\.carfax\.com/[^"]*vin=[^"]*)"', html)
@@ -250,7 +274,27 @@ def notify(vid, title, body, priority=0):
 def key(v):
     return str(v.get("vehicleId") or v.get("stockNumber"))
 
+def test_gemini():
+    if not os.environ.get("GEMINI_API_KEY"):
+        print("=== GEMINI TEST: skipped (no key) ===")
+        return
+    print("=== GEMINI TEST ===")
+    test_v = {"year": 2014, "make": "Toyota", "parentModel": "Corolla", "trim": "LE", "color": "Silver"}
+    test_stats = {"price": 13990, "ship": 500, "kbb": 14000, "miles": 85000,
+                  "effective": 14490, "out_the_door": 15800, "per_1k": 107,
+                  "kbb_gap": 490, "life_pct": 39, "lifetime": 220, "years_left": 22}
+    test_history = {"summary": "Clean history — no reported accidents"}
+    result = ai_review(test_v, "GRAB", test_stats, test_history)
+    if result:
+        print(result)
+    else:
+        print("(no response — check GEMINI_API_KEY secret or Gemini quota)")
+    print("=== END GEMINI TEST ===")
+
 def main():
+    if os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch":
+        test_gemini()
+
     try:
         vehicles = search()
     except Exception as e:

@@ -1,4 +1,4 @@
-import os, json, requests
+import os, json, re, requests
 from pathlib import Path
 
 SEEN_FILE = Path("seen.json")
@@ -17,6 +17,8 @@ def load_seen():
 SEEN = load_seen()
 
 CARVANA_URL = "https://apik.carvana.io/merch/search/api/v2/search"
+CARVANA_VDP = "https://www.carvana.com/vehicle/{}"
+CARFAX_URL = "https://www.carfax.com/VehicleHistory/p/Report.cfx?partner=CVN_0&vin={}"
 PUSHOVER_URL = "https://api.pushover.net/1/messages.json"
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
 DROP_THRESHOLD = 500
@@ -56,6 +58,56 @@ def search():
     )
     resp.raise_for_status()
     return resp.json().get("inventory", {}).get("vehicles", [])
+
+def find_report_url(html, vin):
+    m = re.search(r'href="(https://www\.carfax\.com/[^"]*vin=[^"]*)"', html)
+    if m:
+        return "CarFax", m.group(1)
+    m = re.search(r'href="(https://www\.autocheck\.com/[^"]*vin=[^"]*)"', html, re.IGNORECASE)
+    if m:
+        return "AutoCheck", m.group(1)
+    if vin:
+        return "CarFax", f"https://www.carfax.com/VehicleHistory/p/Report.cfx?partner=CVN_0&vin={vin}"
+    return None, None
+
+def fetch_vdp_details(vehicle_id, vin):
+    try:
+        resp = requests.get(
+            CARVANA_VDP.format(vehicle_id),
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml",
+                "Accept-Language": "en-US,en;q=0.9",
+            },
+            timeout=20,
+        )
+        resp.raise_for_status()
+        html = resp.text
+
+        provider, report_url = find_report_url(html, vin)
+
+        if "No reported accidents" in html:
+            return {"clean": True, "summary": "Clean history — no reported accidents",
+                    "provider": provider, "report_url": report_url}
+
+        m = re.search(r"(\d+)\s+accidents?\s+reported", html, re.IGNORECASE)
+        if m:
+            return {"clean": False,
+                    "summary": f"{m.group(1)} accident(s) reported on {provider or 'history report'}",
+                    "provider": provider, "report_url": report_url}
+        if "accident reported" in html.lower():
+            return {"clean": False,
+                    "summary": f"Accident reported on {provider or 'history report'}",
+                    "provider": provider, "report_url": report_url}
+
+        return {"clean": None,
+                "summary": f"History not verified — check {provider or 'history report'} link",
+                "provider": provider, "report_url": report_url}
+    except Exception as e:
+        print(f"    VDP fetch error for {vehicle_id}: {e}")
+        return {"clean": None,
+                "summary": "History not verified — check history report link",
+                "provider": None, "report_url": None}
 
 def unavailable_reason(v):
     if v.get("isPurchasePending"):
@@ -125,7 +177,7 @@ def analyze(v):
         "life_pct": life_pct, "lifetime": lifetime, "years_left": years_left,
     }
 
-def ai_review(v, verdict, stats):
+def ai_review(v, verdict, stats, history):
     key = os.environ.get("GEMINI_API_KEY")
     if not key:
         return ""
@@ -135,9 +187,10 @@ Car: {v.get('year')} Toyota {v.get('parentModel')} {v.get('trim', '')} ({v.get('
 Miles: {stats['miles']:,} ({stats['life_pct']}% through its typical {stats['lifetime']}k-mile life; would last him ~{stats['years_left']:.0f} more years at his usage)
 Out-the-door price: ${stats['out_the_door']:,} (vehicle + shipping + NY tax + fees)
 Kelly Blue Book: ${stats['kbb']:,}
+Vehicle history: {history['summary']}
 His rubric flagged this as: {verdict}
 
-Give Kevin a plain-English take in 2-3 sentences. No jargon. Talk to him like a friend who knows cars. End with one line that's just BUY, MAYBE, or SKIP."""
+Give Kevin a plain-English take in 2-3 sentences. No jargon. Talk to him like a friend who knows cars. If there's an accident on record, weight that heavily. End with one line that's just BUY, MAYBE, or SKIP."""
 
     try:
         resp = requests.post(
@@ -205,6 +258,17 @@ def main():
             continue
 
         if alert_new or alert_drop:
+            vid = v.get("vehicleId") or v.get("stockNumber")
+            vin = v.get("vin", "")
+
+            history = fetch_vdp_details(vid, vin)
+            print(f"    history: {history['summary']}")
+
+            if history["clean"] is False:
+                print(f"    -> skipping alert (accidents on record)")
+                SEEN[k] = p
+                continue
+
             headline = {
                 "UNICORN": "UNICORN: rare find, buy now",
                 "GRAB": "GRAB: good deal",
@@ -212,16 +276,23 @@ def main():
             }.get(verdict, verdict)
 
             body = f"{headline}\n{yr} Toyota {mdl} {trim}".strip() + "\n\n" + rubric
+            body += f"\n\n{history['summary']}"
+
             if alert_drop:
                 body = f"PRICE DROP: -${drop:,} (was ${prev:,})\n\n" + body
+
             if verdict in ("UNICORN", "GRAB"):
-                review = ai_review(v, verdict, stats)
+                review = ai_review(v, verdict, stats, history)
                 if review:
                     body += "\n\n" + review
 
+            if history.get("report_url"):
+                body += f"\n\nFull {history['provider']} report: {history['report_url']}"
+            elif vin:
+                body += f"\n\nFull CarFax: {CARFAX_URL.format(vin)}"
+
             prefix = "NEW" if alert_new else f"DROP -${drop:,}"
             title = f"{prefix}: {yr} {mdl} - ${p:,}"
-            vid = v.get("vehicleId") or v.get("stockNumber")
             notify(vid, title, body, priority=PRIORITY.get(verdict, 0))
             sent += 1
 
